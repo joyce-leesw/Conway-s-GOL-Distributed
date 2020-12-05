@@ -1,10 +1,12 @@
 package main
 
 import (
-	"fmt"
+
 	//"sync"
 	//"time"
+	"fmt"
 	"net"
+	"sync"
 
 	"log"
 	"net/http"
@@ -39,29 +41,58 @@ type ServerDistributorStruct struct {
 type API int
 
 var world [][]uint8
+var turn int
+var mutex = &sync.Mutex{}
 
 //var controllerFlag chan int
 var controllerFlag = make(chan int, 2)
-var bufferedWorld = make(chan [][]uint8, 1)
+
+//var bufferedWorld = make(chan int, 1)
 
 type Item struct {
 	PWorld [][]uint8
+}
+
+type ItemW struct {
+	SWorld  [][]uint8
+	TurnCur int
 }
 
 type Cf struct {
 	Flag int
 }
 
+// Currently alive cells and current turns
+type Ae struct {
+	Alive   int
+	CurTurn int
+}
+
 func (a *API) CFput(num Cf, reply *Cf) error {
 	var cFlag int
 	cFlag = num.Flag
 	controllerFlag <- cFlag
+	*reply = Cf{turn}
 	return nil
 }
 
-func (a *API) alivecount(num Cf, reply *Cf) error {
-	*reply = Cf{numCalculateAliveCells(<-bufferedWorld)}
+func (a *API) GetWorld(dead Cf, reply *ItemW) error {
+	mutex.Lock()
+	*reply = ItemW{world, turn}
+	mutex.Unlock()
 	return nil
+}
+
+func (a *API) Alivecount(num Ae, reply *Ae) error {
+	mutex.Lock()
+	t := calculateAliveCells(world)
+	*reply = Ae{t, turn}
+	mutex.Unlock()
+	return nil
+}
+
+type Cell struct {
+	X, Y int
 }
 
 // distributor divides the work between workers and interacts with other goroutines.
@@ -101,16 +132,21 @@ func (a *API) ServerDistributor(req ServerDistributorStruct, reply *Item) error 
 			newData = append(newData, slice...)
 		}
 
+		mutex.Lock()
 		world = newData //update the board state
+		turn++
+		mutex.Unlock()
+		//fmt.Println("")
 
-		select {
-		case t := <-bufferedWorld:
-			bufferedWorld <- newData
-			fmt.Println(t)
+		// select {
+		// case <-bufferedWorld: //t :=
+		// 	bufferedWorld <- calculateAliveCells(req.P, newData)
+		// 	//fmt.Println(t)
 
-		default:
-			bufferedWorld <- newData
-		}
+		// default:
+		// 	bufferedWorld <- calculateAliveCells(req.P, newData)
+		// }
+
 		//bufferedWorld <- newData
 
 		var keyFlag int
@@ -120,31 +156,31 @@ func (a *API) ServerDistributor(req ServerDistributorStruct, reply *Item) error 
 		//fmt.Println("does this print 1?")
 
 		keyFlag = <-controllerFlag
-		//fmt.Println("does this print 1?")
 		fmt.Println(keyFlag)
 
-		// if keyFlag == 2 { // when q is pressed, quit turn
-		// 	//state = 2
-		// 	//c.events <- StateChange{turn, state}
-		// 	<-req.ControllerFlag // remove 4 from the buffer
-		// 	break
-		// }
-		//if keyFlag == 0 { // when p is pressed, pause turn
-		//state = 0
-		//<-req.ControllerFlag
-		//c.events <- StateChange{turn, state}
-		// for {
-		// 	keyFlag = <-req.ControllerFlag
-		// 	if keyFlag == 0 { // when p is pressed again, resume
-		// 		//state = 1
-		// 		fmt.Println("Continuing")
-		// 		//c.events <- StateChange{turn, state}
-		// 		break
-		// 	}
-		// }
-		// }
+		if keyFlag == 2 { // when q is pressed, quit turn
+			//state = 2
+			//c.events <- StateChange{turn, state}
+			<-controllerFlag // remove 4 from the buffer
+			break
+		}
+		if keyFlag == 0 { // when p is pressed, pause turn
+			//state = 0
+			<-controllerFlag
+			//c.events <- StateChange{turn, state}
+			for {
+				keyFlag = <-controllerFlag
+				if keyFlag == 0 { // when p is pressed again, resume
+					//state = 1
+					fmt.Println("Continuing")
+					//c.events <- StateChange{turn, state}
+					break
+				}
+			}
+		}
 		// if keyFlag == 1 { // when s is pressed, print current turn
-		// outName := fmt.Sprintf("%vx%vx%v", p.ImageWidth, p.ImageHeight, turn)
+		// 	outName := fmt.Sprintf("%vx%vx%v", p.ImageWidth, p.ImageHeight, turn)
+		// }
 
 		// c.ioCommand <- ioOutput
 		// c.filename <- outName
@@ -166,7 +202,19 @@ func (a *API) ServerDistributor(req ServerDistributorStruct, reply *Item) error 
 
 }
 
-func numCalculateAliveCells(world [][]uint8) int {
+// func numCalculateAliveCells(world [][]uint8) int {
+// 	aliveCells := 0
+// 	for y := 0; y < len(world); y++ {
+// 		for x := 0; x < len(world); x++ {
+// 			if world[y][x] == 255 {
+// 				aliveCells++
+// 			}
+// 		}
+// 	}
+// 	return aliveCells
+// }
+
+func calculateAliveCells(world [][]uint8) int {
 	aliveCells := 0
 	for y := 0; y < len(world); y++ {
 		for x := 0; x < len(world); x++ {

@@ -3,13 +3,14 @@ package gol
 import (
 	"fmt"
 	//"sync"
-	
+
 	"time"
 	//"net"
 
-	"uk.ac.bris.cs/gameoflife/util"
 	"log"
 	"net/rpc"
+
+	"uk.ac.bris.cs/gameoflife/util"
 )
 
 type distributorChannels struct {
@@ -22,26 +23,31 @@ type distributorChannels struct {
 	inputQ   <-chan uint8
 }
 
-type Item struct{
+type Item struct {
 	PWorld [][]uint8
-
 }
 
-type Cf struct{
+type ItemW struct {
+	SWorld  [][]uint8
+	TurnCur int
+}
+
+type Ae struct {
+	Alive   int
+	CurTurn int
+}
+
+type Cf struct {
 	Flag int
-
 }
 
-type ServerDistributorStruct struct{
+type ServerDistributorStruct struct {
 	P Params
 	//C distributorChannels
 	//keyPresses <-chan rune
 	ControllerFlag <-chan int
-	InputWorld [][]uint8
-
-
+	InputWorld     [][]uint8
 }
-
 
 // distributor divides the work between workers and interacts with other goroutines.
 func distributor(p Params, c distributorChannels, keyPresses <-chan rune) {
@@ -49,13 +55,16 @@ func distributor(p Params, c distributorChannels, keyPresses <-chan rune) {
 	ticker := time.NewTicker(2 * time.Second) // create a ticker for our alivecellscount event anon func
 	done := make(chan bool)                   // so we can end the anon go function for allivecellscount
 
-
 	var reply Item
+	var state State
+	state = 1
 	//var req ServerDistributorStruct
 
 	controllerFlag := make(chan int, 2)
 
 	var turn int // undecalered value is zero
+
+	c.events <- StateChange{turn, state}
 
 	initialWorld := make([][]uint8, p.ImageHeight) //make empty board heightxwidth
 	for i := 0; i < (p.ImageHeight); i++ {
@@ -95,7 +104,7 @@ func distributor(p Params, c distributorChannels, keyPresses <-chan rune) {
 	}
 	//fmt.Println("does this print 1?")
 
-	go func(){
+	go func() {
 		var answer Cf
 
 		for {
@@ -103,11 +112,37 @@ func distributor(p Params, c distributorChannels, keyPresses <-chan rune) {
 			switch {
 			case keypressed == 113: // when q is pressed
 				client.Call("API.CFput", Cf{2}, &answer)
+				state = 2
+				//c.events <- StateChange{turn, state}
 
 			case keypressed == 112: // when p is pressed
 				client.Call("API.CFput", Cf{0}, &answer)
+				state = 0
+				c.events <- StateChange{answer.Flag, state}
+				for {
+					keypressed = <-keyPresses
+					if keypressed == 112 { // when p is pressed again, resume
+						state = 1
+						fmt.Println("Continuing")
+						c.events <- StateChange{answer.Flag, state}
+						client.Call("API.CFput", Cf{0}, &answer)
+						break
+					}
+				}
 			case keypressed == 115: // when s is pressed
-				client.Call("API.CFput", Cf{1}, &answer)
+				var wt ItemW
+				client.Call("API.GetWorld", Cf{0}, &wt)
+				outName := fmt.Sprintf("%vx%vx%v", p.ImageWidth, p.ImageHeight, wt.TurnCur)
+
+				c.ioCommand <- ioOutput
+				c.filename <- outName
+
+				for i := 0; i < (p.ImageHeight); i++ {
+					for j := 0; j < (p.ImageHeight); j++ {
+						c.outputQ <- wt.SWorld[i][j]
+					}
+				}
+				c.events <- ImageOutputComplete{wt.TurnCur, outName}
 
 			}
 
@@ -118,10 +153,10 @@ func distributor(p Params, c distributorChannels, keyPresses <-chan rune) {
 		for {
 			select {
 			case <-ticker.C:
-				var cellcount Cf
+				var cellcount Ae
 
-				client.Call("API.alivecount", Cf{0}, &cellcount)
-				c.events <- AliveCellsCount{turn, cellcount.Flag}
+				client.Call("API.Alivecount", Ae{0, 0}, &cellcount)
+				c.events <- AliveCellsCount{cellcount.CurTurn, cellcount.Alive}
 			case <-done:
 				return
 
@@ -129,9 +164,7 @@ func distributor(p Params, c distributorChannels, keyPresses <-chan rune) {
 		}
 	}()
 
-
-
-	sendWorld := ServerDistributorStruct{p,controllerFlag,world}
+	sendWorld := ServerDistributorStruct{p, controllerFlag, world}
 	client.Call("API.ServerDistributor", sendWorld, &reply)
 	//fmt.Println("does this print 2?")
 
@@ -139,31 +172,30 @@ func distributor(p Params, c distributorChannels, keyPresses <-chan rune) {
 	///
 	///
 
-
 	// TODO: Send correct Events when required, e.g. CellFlipped, TurnComplete and FinalTurnComplete.
 	//		 See event.go for a list of all events.
 
-	turn = p.Turns
+	var endturn Ae
+	client.Call("API.Alivecount", Ae{0, 0}, &endturn)
+
+	turn = endturn.CurTurn
 	for _, cellQ := range calculateAliveCells(p, initialWorld) { //kill cells
 		c.events <- CellFlipped{0, cellQ}
 	}
 	//fmt.Println("does this print 3?")
 	world = reply.PWorld
 
-	for _, cellQ := range calculateAliveCells(p, world) {//live cells
+	for _, cellQ := range calculateAliveCells(p, world) { //live cells
 		c.events <- CellFlipped{0, cellQ}
 	}
 	c.events <- FinalTurnComplete{turn, calculateAliveCells(p, world)}
 	c.events <- StateChange{turn, Quitting}
-
 
 	ticker.Stop() //stop ticker
 	done <- true  // send fl;ag to finish anon go routine for alivecellscount
 
 	// output state of game as PGM after all turns completed
 	outName := fmt.Sprintf("%vx%vx%v", p.ImageWidth, p.ImageHeight, turn)
-
-
 
 	c.ioCommand <- ioOutput
 	c.filename <- outName
@@ -196,7 +228,6 @@ func calculateAliveCells(p Params, world [][]uint8) []util.Cell {
 	}
 	return aliveCells
 }
-
 
 // func controller(keyPresses <-chan rune) {
 // 	var answer Cf
