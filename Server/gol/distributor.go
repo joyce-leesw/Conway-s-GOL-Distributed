@@ -6,6 +6,7 @@ import (
 	//"time"
 	"fmt"
 	"net"
+	"os"
 	"sync"
 
 	"log"
@@ -91,27 +92,44 @@ func (a *API) Alivecount(num Ae, reply *Ae) error {
 	return nil
 }
 
-type Cell struct {
-	X, Y int
+// type Cell struct {
+// 	X, Y int
+// }
+func (a *API) KillProg(kill Cf, reply *Cf) error {
+	os.Exit(0)
+	return nil
 }
 
 // distributor divides the work between workers and interacts with other goroutines.
 func (a *API) ServerDistributor(req ServerDistributorStruct, reply *Item) error {
 
 	//var state State
+	StrSerList := []string{"localhost:8030", "localhost:8040", "localhost:8050", "localhost:8060"}
 	//controllerFlag := make(chan int, 2)
+	var SubSerList []*rpc.Client
+	for _, s := range StrSerList {
+		client, err := rpc.DialHTTP("tcp", s) //"127.0.0.1:8030"  //rpc.DialHTTP("tcp", "localhost:8080")
+		if err != nil {
+			log.Fatal("Connection error: ", err)
+			fmt.Println("con fail :(")
+		} else {
+			SubSerList = append(SubSerList, client)
+		}
 
-	sliceOfCh := make([]chan [][]uint8, req.P.Threads) // make a separate channel for each divided piece of the game board
+	}
+	SubSerCount := len(SubSerList)
+
+	sliceOfCh := make([]chan [][]uint8, SubSerCount) // make a separate channel for each divided piece of the game board
 
 	world = req.InputWorld
 
 	for turnf := 0; turnf < req.P.Turns; turnf++ {
 
-		baseLines := req.P.ImageHeight / req.P.Threads
-		slackLines := req.P.ImageHeight % req.P.Threads // remainder
-		workLines := make([]int, req.P.Threads)
+		baseLines := req.P.ImageHeight / SubSerCount
+		slackLines := req.P.ImageHeight % SubSerCount // remainder
+		workLines := make([]int, SubSerCount)
 
-		for i := 0; i < req.P.Threads; i++ { // create an array with the minimum amount of lines to work on
+		for i := 0; i < SubSerCount; i++ { // create an array with the minimum amount of lines to work on
 			workLines[i] = baseLines
 		}
 
@@ -119,15 +137,15 @@ func (a *API) ServerDistributor(req ServerDistributorStruct, reply *Item) error 
 			workLines[i]++
 		}
 
-		for i := 0; i < req.P.Threads; i++ { //call a worker for each section we are splitting the board into
+		for i := 0; i < SubSerCount; i++ { //call a worker for each section we are splitting the board into
 			sliceOfCh[i] = make(chan [][]uint8)
 
-			go worker(workLines, i, world, sliceOfCh[i], req.P)
+			go worker(workLines, i, world, sliceOfCh[i], req.P, SubSerList)
 		}
 
 		var newData [][]uint8
 
-		for i := 0; i < req.P.Threads; i++ { // take our updated parts and put them back togther
+		for i := 0; i < SubSerCount; i++ { // take our updated parts and put them back togther
 			slice := <-sliceOfCh[i]
 			newData = append(newData, slice...)
 		}
@@ -178,6 +196,16 @@ func (a *API) ServerDistributor(req ServerDistributorStruct, reply *Item) error 
 				}
 			}
 		}
+		if keyFlag == 5 {
+			<-controllerFlag // remove 4 from the buffer
+			for _, ks := range SubSerList {
+				var np Cf
+				ks.Call("API.KillProg", Cf{0}, &np)
+			}
+
+			break
+
+		}
 		// if keyFlag == 1 { // when s is pressed, print current turn
 		// 	outName := fmt.Sprintf("%vx%vx%v", p.ImageWidth, p.ImageHeight, turn)
 		// }
@@ -197,6 +225,7 @@ func (a *API) ServerDistributor(req ServerDistributorStruct, reply *Item) error 
 	}
 
 	*reply = Item{PWorld: world}
+	//os.Exit(0)
 
 	return nil
 
@@ -226,11 +255,13 @@ func calculateAliveCells(world [][]uint8) int {
 	return aliveCells
 }
 
-func worker(lines []int, sliceNum int, world [][]uint8, sliceOfChi chan<- [][]uint8, p Params) {
+func worker(lines []int, sliceNum int, world [][]uint8, sliceOfChi chan<- [][]uint8, p Params, SubSerList []*rpc.Client) {
 	var worldGo [][]uint8
 	var newData [][]uint8
 
 	compLines := 0
+
+	SubSerCount := len(SubSerList)
 
 	for i := 0; i < sliceNum; i++ {
 		compLines = compLines + lines[i]
@@ -238,7 +269,7 @@ func worker(lines []int, sliceNum int, world [][]uint8, sliceOfChi chan<- [][]ui
 
 	if sliceNum == 0 { // is this the first slice of the GOL board
 		newData = append(newData, world[p.ImageHeight-1]) // add last line to start
-		if p.Threads == 1 {                               //is this the only slice
+		if SubSerCount == 1 {                             //is this the only slice
 			worldGo = world
 			worldGo = append(worldGo, world[0]) // add first line to the end if we have 1 worker
 		} else {
@@ -247,108 +278,116 @@ func worker(lines []int, sliceNum int, world [][]uint8, sliceOfChi chan<- [][]ui
 
 		worldGo = append(newData, worldGo...)
 
-	} else if sliceNum == p.Threads-1 { //is this neither the first or last slice of the GOL board
+	} else if sliceNum == SubSerCount-1 { //is this neither the first or last slice of the GOL board
 		worldGo = world[compLines-1:]
 		worldGo = append(worldGo, world[0])
 	} else { //is this the last slice of the GOL board
 		worldGo = world[compLines-1 : compLines+lines[sliceNum]+1]
 	}
 
-	part := calculateNextState(p, worldGo, compLines)
+	var subPart Item
+	sendWorld := ServerDistributorStruct{p, controllerFlag, worldGo}
+	// replace client with this
+	fmt.Println("worldGo %d", len(worldGo))
+	SubSerList[sliceNum].Call("API.SubServerDistributor", sendWorld, &subPart)
+	part := subPart.PWorld
+	fmt.Println("part %d", len(part))
 
-	sliceOfChi <- part
+	//part := calculateNextState(p, worldGo, compLines)
+
+	sliceOfChi <- part[1 : len(part)-1]
 }
 
-func calculateNextState(p Params, world [][]uint8, compLines int) [][]uint8 {
+// func calculateNextState(p Params, world [][]uint8, compLines int) [][]uint8 {
 
-	var counter, nextX, lastX, nextY, lastY int //can I use a byte here instead
-	newWS := make([][]uint8, (len(world) - 2))
-	for i := 0; i < (len(world) - 2); i++ {
-		newWS[i] = make([]uint8, p.ImageWidth)
-	}
+// 	var counter, nextX, lastX, nextY, lastY int //can I use a byte here instead
+// 	newWS := make([][]uint8, (len(world) - 2))
+// 	for i := 0; i < (len(world) - 2); i++ {
+// 		newWS[i] = make([]uint8, p.ImageWidth)
+// 	}
 
-	tempW := world[1 : len(world)-1]
+// 	tempW := world[1 : len(world)-1]
 
-	for y, s := range tempW {
+// 	for y, s := range tempW {
 
-		for x, sl := range s {
+// 		for x, sl := range s {
 
-			counter = 0
+// 			counter = 0
 
-			//Set the nextX and lastX variables
-			if x == len(s)-1 { //are we looking at the last element of the slice
-				nextX = 0
-				lastX = x - 1
-			} else if x == 0 { //are we looking at the first element of the slice
-				nextX = x + 1
-				lastX = len(s) - 1
-			} else { //we are looking at any element that is not the first of last element of a slice
-				nextX = x + 1
-				lastX = x - 1
-			}
+// 			//Set the nextX and lastX variables
+// 			if x == len(s)-1 { //are we looking at the last element of the slice
+// 				nextX = 0
+// 				lastX = x - 1
+// 			} else if x == 0 { //are we looking at the first element of the slice
+// 				nextX = x + 1
+// 				lastX = len(s) - 1
+// 			} else { //we are looking at any element that is not the first of last element of a slice
+// 				nextX = x + 1
+// 				lastX = x - 1
+// 			}
 
-			//Set the nextY and lastY variables
-			nextY = y + 2
-			lastY = y
+// 			//Set the nextY and lastY variables
+// 			nextY = y + 2
+// 			lastY = y
 
-			if 255 == s[nextX] {
-				counter++
-			} //look E
-			if 255 == s[lastX] {
-				counter++
-			} //look W
+// 			if 255 == s[nextX] {
+// 				counter++
+// 			} //look E
+// 			if 255 == s[lastX] {
+// 				counter++
+// 			} //look W
 
-			if 255 == world[lastY][lastX] {
-				counter++
-			} //look NW
-			if 255 == world[lastY][x] {
-				counter++
-			} //look N
-			if 255 == world[lastY][nextX] {
-				counter++
-			} //look NE
+// 			if 255 == world[lastY][lastX] {
+// 				counter++
+// 			} //look NW
+// 			if 255 == world[lastY][x] {
+// 				counter++
+// 			} //look N
+// 			if 255 == world[lastY][nextX] {
+// 				counter++
+// 			} //look NE
 
-			if 255 == world[nextY][lastX] {
-				counter++
-			} //look SW
-			if 255 == world[nextY][x] {
-				counter++
-			} //look S
-			if 255 == world[nextY][nextX] {
-				counter++
-			} //look SE
+// 			if 255 == world[nextY][lastX] {
+// 				counter++
+// 			} //look SW
+// 			if 255 == world[nextY][x] {
+// 				counter++
+// 			} //look S
+// 			if 255 == world[nextY][nextX] {
+// 				counter++
+// 			} //look SE
 
-			//Live cells
-			if sl == 255 {
-				if counter < 2 || counter > 3 { //"any live cell with fewer than two or more than three live neighbours dies"
-					newWS[y][x] = 0
-					//c.events <- CellFlipped{turnf, util.Cell{X: x, Y: (y + compLines)}}
+// 			//Live cells
+// 			if sl == 255 {
+// 				if counter < 2 || counter > 3 { //"any live cell with fewer than two or more than three live neighbours dies"
+// 					newWS[y][x] = 0
+// 					//c.events <- CellFlipped{turnf, util.Cell{X: x, Y: (y + compLines)}}
 
-				} else { //"any live cell with two or three live neighbours is unaffected"
-					newWS[y][x] = 255
-				}
+// 				} else { //"any live cell with two or three live neighbours is unaffected"
+// 					newWS[y][x] = 255
+// 				}
 
-			}
+// 			}
 
-			//Dead cell -- not MGS
-			if sl == 0 {
-				if counter == 3 { //"any dead cell with exactly three live neighbours becomes alive"
-					newWS[y][x] = 255
-					//c.events <- CellFlipped{turnf, util.Cell{X: x, Y: (y + compLines)}}
+// 			//Dead cell -- not MGS
+// 			if sl == 0 {
+// 				if counter == 3 { //"any dead cell with exactly three live neighbours becomes alive"
+// 					newWS[y][x] = 255
+// 					//c.events <- CellFlipped{turnf, util.Cell{X: x, Y: (y + compLines)}}
 
-				} else {
-					newWS[y][x] = 0 // Dead cells elsewise stay dead
-				}
+// 				} else {
+// 					newWS[y][x] = 0 // Dead cells elsewise stay dead
+// 				}
 
-			}
+// 			}
 
-		}
+// 		}
 
-	}
+// 	}
 
-	return newWS
+// 	return newWS
 
-}
+// }
 
 func main() {
 	//controllerFlag := make(chan int, 2)

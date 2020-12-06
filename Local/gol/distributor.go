@@ -144,6 +144,11 @@ func distributor(p Params, c distributorChannels, keyPresses <-chan rune) {
 				}
 				c.events <- ImageOutputComplete{wt.TurnCur, outName}
 
+			case keypressed == 107: // when k is pressed
+				client.Call("API.CFput", Cf{5}, &answer)
+				state = 2
+				//c.events <- StateChange{turn, state}
+
 			}
 
 		}
@@ -179,6 +184,7 @@ func distributor(p Params, c distributorChannels, keyPresses <-chan rune) {
 	client.Call("API.Alivecount", Ae{0, 0}, &endturn)
 
 	turn = endturn.CurTurn
+
 	for _, cellQ := range calculateAliveCells(p, initialWorld) { //kill cells
 		c.events <- CellFlipped{0, cellQ}
 	}
@@ -205,6 +211,9 @@ func distributor(p Params, c distributorChannels, keyPresses <-chan rune) {
 			c.outputQ <- world[i][j]
 		}
 	}
+
+	var np Cf
+	client.Call("API.KillProg", Cf{0}, &np)
 
 	c.events <- ImageOutputComplete{turn, outName}
 
