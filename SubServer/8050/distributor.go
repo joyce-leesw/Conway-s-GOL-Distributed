@@ -34,8 +34,9 @@ type ServerDistributorStruct struct {
 	P Params
 	//C distributorChannels
 	//keyPresses <-chan rune
-	ControllerFlag chan int // remooooooooooooooooooooovvveeee
-	InputWorld     [][]uint8
+	//ControllerFlag chan int // remooooooooooooooooooooovvveeee
+	InputWorld [][]uint8
+	SubAddList []string
 }
 
 type API int

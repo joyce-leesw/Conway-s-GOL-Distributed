@@ -2,7 +2,8 @@ package gol
 
 import (
 	"fmt"
-	//"sync"
+	"os"
+	"strings"
 
 	"time"
 	//"net"
@@ -12,6 +13,8 @@ import (
 
 	"uk.ac.bris.cs/gameoflife/util"
 )
+
+var kp int
 
 type distributorChannels struct {
 	events    chan<- Event
@@ -32,6 +35,7 @@ type ItemW struct {
 	TurnCur int
 }
 
+//Alive event, this struct to get receive the alive cells and turns from the server(send empty and receive values)
 type Ae struct {
 	Alive   int
 	CurTurn int
@@ -42,29 +46,23 @@ type Cf struct {
 }
 
 type ServerDistributorStruct struct {
-	P Params
-	//C distributorChannels
-	//keyPresses <-chan rune
-	ControllerFlag <-chan int
-	InputWorld     [][]uint8
+	P          Params
+	InputWorld [][]uint8
+	SubAddList []string
 }
 
 // distributor divides the work between workers and interacts with other goroutines.
 func distributor(p Params, c distributorChannels, keyPresses <-chan rune) {
+	//fmt.Println("Enter Your First Name: ")
 
 	ticker := time.NewTicker(2 * time.Second) // create a ticker for our alivecellscount event anon func
-	done := make(chan bool)                   // so we can end the anon go function for allivecellscount
+	done := make(chan bool)                   // so we can end the anon go function for alivecellscount
 
 	var reply Item
 	var state State
 	state = 1
-	//var req ServerDistributorStruct
-
-	controllerFlag := make(chan int, 2)
 
 	var turn int // undecalered value is zero
-
-	c.events <- StateChange{turn, state}
 
 	initialWorld := make([][]uint8, p.ImageHeight) //make empty board heightxwidth
 	for i := 0; i < (p.ImageHeight); i++ {
@@ -84,25 +82,27 @@ func distributor(p Params, c distributorChannels, keyPresses <-chan rune) {
 		}
 	}
 
-	// TODO: For all initially alive cells send a CellFlipped Event.
-	for _, cellQ := range calculateAliveCells(p, initialWorld) {
-		c.events <- CellFlipped{0, cellQ}
-	}
-
 	// TODO: Execute all turns of the Game of Life.
-	//var state State
 
 	world := initialWorld
 
-	///
-	///
-	//call our rpc function
-	client, err := rpc.DialHTTP("tcp", "localhost:8080")
-
+	//conect to our rpc server
+	serAdd := os.Getenv("SER")
+	if serAdd == "" {
+		serAdd = "localhost:8080" //default address for testing
+	}
+	client, err := rpc.DialHTTP("tcp", serAdd)
+	fmt.Println(serAdd)
 	if err != nil {
 		log.Fatal("Connection error: ", err)
 	}
-	//fmt.Println("does this print 1?")
+
+	subL := os.Getenv("SUB")
+	if subL == "" {
+		subL = "localhost:8030,localhost:8040,localhost:8050,localhost:8060" //default address for testing
+	}
+
+	subAdds := strings.Split(subL, ",")
 
 	go func() {
 		var answer Cf
@@ -113,7 +113,6 @@ func distributor(p Params, c distributorChannels, keyPresses <-chan rune) {
 			case keypressed == 113: // when q is pressed
 				client.Call("API.CFput", Cf{2}, &answer)
 				state = 2
-				//c.events <- StateChange{turn, state}
 
 			case keypressed == 112: // when p is pressed
 				client.Call("API.CFput", Cf{0}, &answer)
@@ -147,10 +146,8 @@ func distributor(p Params, c distributorChannels, keyPresses <-chan rune) {
 			case keypressed == 107: // when k is pressed
 				client.Call("API.CFput", Cf{5}, &answer)
 				state = 2
-				//c.events <- StateChange{turn, state}
-
+				kp = 107
 			}
-
 		}
 	}()
 
@@ -169,13 +166,20 @@ func distributor(p Params, c distributorChannels, keyPresses <-chan rune) {
 		}
 	}()
 
-	sendWorld := ServerDistributorStruct{p, controllerFlag, world}
-	client.Call("API.ServerDistributor", sendWorld, &reply)
-	//fmt.Println("does this print 2?")
+	sendWorld := ServerDistributorStruct{p, world, subAdds}
 
-	///
-	///
-	///
+	if os.Getenv("CONT") == "yes" {
+		var contWorld ItemW
+		client.Call("API.GetWorld", Cf{0}, &contWorld)
+
+		sendWorld = ServerDistributorStruct{Params{p.Turns - contWorld.TurnCur, p.Threads, p.ImageWidth, p.ImageHeight}, contWorld.SWorld, subAdds}
+		turn = contWorld.TurnCur
+
+	}
+
+	c.events <- StateChange{turn, state}
+
+	client.Call("API.ServerDistributor", sendWorld, &reply)
 
 	// TODO: Send correct Events when required, e.g. CellFlipped, TurnComplete and FinalTurnComplete.
 	//		 See event.go for a list of all events.
@@ -185,20 +189,13 @@ func distributor(p Params, c distributorChannels, keyPresses <-chan rune) {
 
 	turn = endturn.CurTurn
 
-	for _, cellQ := range calculateAliveCells(p, initialWorld) { //kill cells
-		c.events <- CellFlipped{0, cellQ}
-	}
-	//fmt.Println("does this print 3?")
 	world = reply.PWorld
 
-	for _, cellQ := range calculateAliveCells(p, world) { //live cells
-		c.events <- CellFlipped{0, cellQ}
-	}
 	c.events <- FinalTurnComplete{turn, calculateAliveCells(p, world)}
 	c.events <- StateChange{turn, Quitting}
 
 	ticker.Stop() //stop ticker
-	done <- true  // send fl;ag to finish anon go routine for alivecellscount
+	done <- true  //send flag to finish anon go routine for alivecellscount
 
 	// output state of game as PGM after all turns completed
 	outName := fmt.Sprintf("%vx%vx%v", p.ImageWidth, p.ImageHeight, turn)
@@ -213,7 +210,11 @@ func distributor(p Params, c distributorChannels, keyPresses <-chan rune) {
 	}
 
 	var np Cf
-	client.Call("API.KillProg", Cf{0}, &np)
+	if kp == 107 {
+		client.Call("API.KillProg", Cf{0}, &np)
+
+	}
+	//client.Call("API.KillProg", Cf{0}, &np)
 
 	c.events <- ImageOutputComplete{turn, outName}
 
@@ -221,7 +222,6 @@ func distributor(p Params, c distributorChannels, keyPresses <-chan rune) {
 	c.ioCommand <- ioCheckIdle
 	<-c.ioIdle
 
-	//c.events <- StateChange{turn, Quitting}
 	// Close the channel to stop the SDL goroutine gracefully. Removing may cause deadlock.
 	close(c.events)
 }
@@ -237,22 +237,3 @@ func calculateAliveCells(p Params, world [][]uint8) []util.Cell {
 	}
 	return aliveCells
 }
-
-// func controller(keyPresses <-chan rune) {
-// 	var answer Cf
-
-// 	for {
-// 		keypressed := <-keyPresses
-// 		switch {
-// 		case keypressed == 113: // when q is pressed
-// 			client.Call("API.CFput", Cf{2}, &answer)
-// 		case keypressed == 112: // when p is pressed
-// 			client.Call("API.CFput", Cf{0}, &answer)
-// 		case keypressed == 115: // when s is pressed
-// 			client.Call("API.CFput", Cf{1}, &answer)
-
-// 		}
-
-// 	}
-
-// }

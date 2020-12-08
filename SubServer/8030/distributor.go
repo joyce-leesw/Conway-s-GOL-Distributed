@@ -1,28 +1,14 @@
 package main
 
 import (
-
-	//"sync"
-	//"time"
-
 	"net"
 	"os"
 
 	"log"
 	"net/http"
 	"net/rpc"
-	//"uk.ac.bris.cs/gameoflife/util"
 )
 
-// type distributorChannels struct {
-// 	events    chan<- Event
-// 	ioCommand chan<- ioCommand
-// 	ioIdle    <-chan bool
-
-// 	filename chan<- string
-// 	outputQ  chan<- uint8
-// 	inputQ   <-chan uint8
-// }
 type Params struct {
 	Turns       int
 	Threads     int
@@ -32,79 +18,34 @@ type Params struct {
 
 type ServerDistributorStruct struct {
 	P Params
-	//C distributorChannels
-	//keyPresses <-chan rune
-	ControllerFlag chan int // remooooooooooooooooooooovvveeee
-	InputWorld     [][]uint8
+	//ControllerFlag chan int // remooooooooooooooooooooovvveeee
+	InputWorld [][]uint8
+	SubAddList []string
 }
 
 type API int
 
 var world [][]uint8
 
-//var turn int
-//var mutex = &sync.Mutex{}
-
-//var controllerFlag chan int
-//var controllerFlag = make(chan int, 2)
-
-//var bufferedWorld = make(chan int, 1)
-
 type Item struct {
 	PWorld [][]uint8
 }
 
-// type ItemW struct {
-// 	SWorld  [][]uint8
-// 	TurnCur int
-// }
-
 type Cf struct {
 	Flag int
 }
-
-// // Currently alive cells and current turns
-// type Ae struct {
-// 	Alive   int
-// 	CurTurn int
-// }
-
-// func (a *API) CFput(num Cf, reply *Cf) error {
-// 	var cFlag int
-// 	cFlag = num.Flag
-// 	controllerFlag <- cFlag
-// 	*reply = Cf{turn}
-// 	return nil
-// }
 
 func (a *API) KillProg(kill Cf, reply *Cf) error {
 	os.Exit(0)
 	return nil
 }
 
-// func (a *API) Alivecount(num Ae, reply *Ae) error {
-// 	mutex.Lock()
-// 	t := calculateAliveCells(world)
-// 	*reply = Ae{t, turn}
-// 	mutex.Unlock()
-// 	return nil
-// }
-
-// type Cell struct {
-// 	X, Y int
-// }
-
 // distributor divides the work between workers and interacts with other goroutines.
 func (a *API) SubServerDistributor(req ServerDistributorStruct, reply *Item) error {
-
-	//var state State
-	//controllerFlag := make(chan int, 2)
 
 	sliceOfCh := make([]chan [][]uint8, req.P.Threads) // make a separate channel for each divided piece of the game board
 
 	world = req.InputWorld
-
-	//for turnf := 0; turnf < req.P.Turns; turnf++ {
 
 	baseLines := len(world) / req.P.Threads
 	slackLines := len(world) % req.P.Threads // remainder
@@ -131,98 +72,12 @@ func (a *API) SubServerDistributor(req ServerDistributorStruct, reply *Item) err
 		newData = append(newData, slice...)
 	}
 
-	//mutex.Lock()
 	world = newData //update the board state
-	//turn++
-	//mutex.Unlock()
-	//fmt.Println("")
-
-	// select {
-	// case <-bufferedWorld: //t :=
-	// 	bufferedWorld <- calculateAliveCells(req.P, newData)
-	// 	//fmt.Println(t)
-
-	// default:
-	// 	bufferedWorld <- calculateAliveCells(req.P, newData)
-	// }
-
-	//bufferedWorld <- newData
-
-	// var keyFlag int
-	// //fmt.Println("does this print 1?")
-
-	// controllerFlag <- 4
-	// //fmt.Println("does this print 1?")
-
-	// keyFlag = <-controllerFlag
-	// fmt.Println(keyFlag)
-
-	// if keyFlag == 2 { // when q is pressed, quit turn
-	// 	//state = 2
-	// 	//c.events <- StateChange{turn, state}
-	// 	<-controllerFlag // remove 4 from the buffer
-	// 	break
-	// }
-	// if keyFlag == 0 { // when p is pressed, pause turn
-	// 	//state = 0
-	// 	<-controllerFlag
-	// 	//c.events <- StateChange{turn, state}
-	// 	for {
-	// 		keyFlag = <-controllerFlag
-	// 		if keyFlag == 0 { // when p is pressed again, resume
-	// 			//state = 1
-	// 			fmt.Println("Continuing")
-	// 			//c.events <- StateChange{turn, state}
-	// 			break
-	// 		}
-	// 	}
-	//}
-	// if keyFlag == 1 { // when s is pressed, print current turn
-	// 	outName := fmt.Sprintf("%vx%vx%v", p.ImageWidth, p.ImageHeight, turn)
-	// }
-
-	// c.ioCommand <- ioOutput
-	// c.filename <- outName
-
-	// for i := 0; i < (p.ImageHeight); i++ {
-	// 	for j := 0; j < (p.ImageHeight); j++ {
-	// 		c.outputQ <- world[i][j]
-	// 	}
-	// }
-	// //c.events <- ImageOutputComplete{turn, outName}
-	// <-req.controllerFlag
-
-	//}
-
 	*reply = Item{PWorld: world}
 
 	return nil
 
 }
-
-// func numCalculateAliveCells(world [][]uint8) int {
-// 	aliveCells := 0
-// 	for y := 0; y < len(world); y++ {
-// 		for x := 0; x < len(world); x++ {
-// 			if world[y][x] == 255 {
-// 				aliveCells++
-// 			}
-// 		}
-// 	}
-// 	return aliveCells
-// }
-
-// func calculateAliveCells(world [][]uint8) int {
-// 	aliveCells := 0
-// 	for y := 0; y < len(world); y++ {
-// 		for x := 0; x < len(world); x++ {
-// 			if world[y][x] == 255 {
-// 				aliveCells++
-// 			}
-// 		}
-// 	}
-// 	return aliveCells
-// }
 
 func worker(lines []int, sliceNum int, world [][]uint8, sliceOfChi chan<- [][]uint8, p Params) {
 	var worldGo [][]uint8
@@ -320,7 +175,6 @@ func calculateNextState(p Params, world [][]uint8, compLines int) [][]uint8 {
 			if sl == 255 {
 				if counter < 2 || counter > 3 { //"any live cell with fewer than two or more than three live neighbours dies"
 					newWS[y][x] = 0
-					//c.events <- CellFlipped{turnf, util.Cell{X: x, Y: (y + compLines)}}
 
 				} else { //"any live cell with two or three live neighbours is unaffected"
 					newWS[y][x] = 255
@@ -332,7 +186,6 @@ func calculateNextState(p Params, world [][]uint8, compLines int) [][]uint8 {
 			if sl == 0 {
 				if counter == 3 { //"any dead cell with exactly three live neighbours becomes alive"
 					newWS[y][x] = 255
-					//c.events <- CellFlipped{turnf, util.Cell{X: x, Y: (y + compLines)}}
 
 				} else {
 					newWS[y][x] = 0 // Dead cells elsewise stay dead
@@ -349,7 +202,6 @@ func calculateNextState(p Params, world [][]uint8, compLines int) [][]uint8 {
 }
 
 func main() {
-	//controllerFlag := make(chan int, 2)
 
 	var api = new(API)
 	err := rpc.Register(api)
@@ -368,6 +220,7 @@ func main() {
 	err = http.Serve(listener, nil)
 	if err != nil {
 		log.Fatal("error serving: ", err)
+
 	}
 
 }
